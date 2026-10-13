@@ -578,7 +578,7 @@ Viết 1–2 trang (không có template cứng) trả lời:
 outputs/report.md
 outputs/savings.png
 outputs/focus_export.csv
-[bài viết ngắn — .md hoặc .pdf]
+writeup.md
 ```
 
 ---

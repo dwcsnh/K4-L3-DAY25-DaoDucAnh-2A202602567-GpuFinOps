@@ -2,15 +2,15 @@
 
 **Period:** monthly  
 **Baseline spend:** $27,133  
-**Optimized spend:** $14,626  
-**Projected savings:** $12,507  (**46%**)
+**Optimized spend:** $14,904  
+**Projected savings:** $12,229  (**45%**)
 
 ## Savings by lever
 
 | Lever | Savings (USD) |
 |---|---|
 | Inference (cascade/cache/batch) | $1,212 |
-| Purchasing (spot/reserved) | $10,040 |
+| Purchasing (spot/reserved) | $9,762 |
 | Right-size util-lies | $655 |
 | Kill idle GPUs | $600 |
 

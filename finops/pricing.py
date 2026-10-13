@@ -60,21 +60,115 @@ def break_even_utilization(discount_frac: float) -> float:
     return max(0.0, min(1.0, 1.0 - discount_frac))
 
 
-def recommend_tier(hours_per_day: float, interruptible: bool, reserved_discount: float = 0.45) -> str:
-    """Pick a purchasing tier from a workload's duty cycle + interruptibility.
+GPU_INTERRUPTION_RATES = {
+    "H100": 0.03,    # ~3% per hour (stable, high-capacity clusters)
+    "H200": 0.04,
+    "B200": 0.02,
+    "A100": 0.08,    # ~8% per hour
+    "MI300X": 0.06,
+    "L4": 0.12,      # ~12% per hour
+    "A10G": 0.20,    # ~20% per hour (high contention / preemption volatility)
+}
 
-    DOCUMENTED simple policy (instructor extension point — swap in your own):
-      - interruptible & not 24/7  -> 'spot'      (checkpoint and ride the discount)
-      - duty cycle >= break-even  -> 'reserved'  (steady, high utilization)
-      - otherwise                 -> 'on_demand' (spiky / low duty)
+
+def recommend_tier(
+    hours_per_day: float,
+    interruptible: bool,
+    reserved_discount: float = 0.45,
+    gpu_type: str | None = None,
+    job_days: float | None = None,
+) -> str:
+    """Pick a purchasing tier from duty cycle, interruptibility, GPU type, and duration.
+
+    Extension 1 logic:
+      1. Interruption rate risk: For interruptible workloads, check GPU preemption rate.
+         High preemption (e.g. >=15% on A10G) coupled with short/ad-hoc runs (<=8h/day)
+         risks excessive restart overhead or breaks interactive work -> 'on_demand'.
+         Otherwise -> 'spot'.
+      2. Duration & Commitment lock-in: For uninterruptible workloads with duty cycle >= break-even:
+         If job_days is specified and < 180 days (short ad-hoc project), committing to 1-3 years
+         locks in wasted unutilized capacity -> 'on_demand'.
+         Otherwise (long-running / core production service) -> 'reserved'.
+      3. Otherwise -> 'on_demand'.
     """
     duty = max(0.0, hours_per_day) / 24.0
     be = break_even_utilization(reserved_discount)
+
     if interruptible and hours_per_day < 24:
+        irate = GPU_INTERRUPTION_RATES.get(gpu_type, 0.05) if gpu_type else 0.05
+        if irate >= 0.15 and hours_per_day <= 8:
+            return "on_demand"
         return "spot"
+
     if duty >= be:
+        if job_days is not None and job_days < 180:
+            return "on_demand"
         return "reserved"
+
     return "on_demand"
+
+
+def recommend_commitment_length(job_days: float | None = None) -> str:
+    """Compare 3-year vs 1-year reserved commitment based on workload time horizon.
+
+    Returns:
+      '3yr' for long-term production services (>= 2 years) where 45% discount is maximized.
+      '1yr' for medium-term initiatives (1-2 years) to minimize multi-year lock-in risk.
+      'none' for temporary projects (< 1 year) where commitment lock-in exceeds on-demand cost.
+    """
+    if job_days is None or job_days >= 730:
+        return "3yr"
+    elif job_days >= 365:
+        return "1yr"
+    return "none"
+
+
+def tier_recommendation_matrix() -> list[dict]:
+    """Decision matrix for purchasing tiers across GPU type, duty cycle, and interruptibility."""
+    matrix = []
+    sample_gpus = ["H100", "A100", "A10G", "L4"]
+    for g in sample_gpus:
+        irate = GPU_INTERRUPTION_RATES.get(g, 0.05)
+        for duty_hrs, is_int in [(4, False), (8, True), (18, True), (24, False)]:
+            tier = recommend_tier(duty_hrs, is_int, gpu_type=g)
+            matrix.append({
+                "gpu_type": g,
+                "hours_per_day": duty_hrs,
+                "interruptible": is_int,
+                "interruption_rate": irate,
+                "recommended_tier": tier,
+            })
+    return matrix
+
+
+def cache_break_even_reads(
+    write_cost_per_m: float,
+    base_price_per_m: float,
+    read_discount: float = 0.10,
+) -> float:
+    """Break-even reads needed for prompt caching to save money over uncached requests.
+
+    Each read saves: base_price_per_m * (1 - read_discount).
+    Break-even reads = write_cost_per_m / (base_price_per_m * (1 - read_discount)).
+    """
+    savings_per_read = base_price_per_m * (1.0 - read_discount)
+    if savings_per_read <= 0:
+        return float("inf")
+    return write_cost_per_m / savings_per_read
+
+
+def cache_is_worth_it(
+    avg_cache_reads: float,
+    write_cost_per_m: float,
+    read_discount: float = 0.10,
+    base_price_per_m: float = 3.00,
+) -> bool:
+    """Prompt cache pays off when total read savings exceed prefix creation/storage cost.
+
+    Break-even: avg_cache_reads >= write_cost_per_m / (base_price_per_m * (1 - read_discount)).
+    """
+    be_reads = cache_break_even_reads(write_cost_per_m, base_price_per_m, read_discount)
+    return avg_cache_reads >= be_reads
 
 
 def spot_checkpoint_cost(
